@@ -1,0 +1,47 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: >-
+  Artifacts for the Paper "QUIC Steps: Evaluating Pacing
+  Strategies in QUIC Implementations"
+message: >-
+  If you use this repository, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Marcel
+    family-names: Kempf
+    email: kempfm@net.in.tum.de
+    affiliation: Technical University of Munich
+    orcid: 'https://orcid.org/0000-0001-7540-776X'
+  - given-names: Simon
+    family-names: Tietz
+    email: tietz@net.in.tum.de
+    affiliation: Technical University of Munich
+    orcid: 'https://orcid.org/0009-0007-9470-463X'
+  - given-names: Benedikt
+    family-names: Jaeger
+    email: jaeger@net.in.tum.de
+    affiliation: Technical University of Munich
+    orcid: 'https://orcid.org/0000-0002-8541-5496'
+  - given-names: Johannes
+    family-names: Späth
+    email: spaethj@net.in.tum.de
+    affiliation: Technical University of Munich
+    orcid: 'https://orcid.org/0009-0008-5564-2090'
+  - given-names: Georg
+    family-names: Carle
+    email: carle@net.in.tum.de
+    affiliation: Technical University of Munich
+    orcid: 'https://orcid.org/0000-0002-2347-1839'
+  - given-names: Johannes
+    family-names: Zirngibl
+    email: jzirngib@mpi-inf.mpg.de
+    affiliation: Max Planck Institute for Informatics
+    orcid: 'https://orcid.org/0000-0002-2918-016X'
+abstract: >-
+  This repository contains all artifacts belonging to the
+  paper "QUIC Steps: Evaluating Pacing Strategies in QUIC
+  Implementations".
+license: CC-BY-4.0
