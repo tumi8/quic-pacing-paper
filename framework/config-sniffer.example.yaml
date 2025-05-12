@@ -1,0 +1,25 @@
+testbed: testbed/testbed_cesis-nida.json
+server: quiche
+client: quiche
+test: goodput
+repetitions: 1
+filesize: 128
+implementation_directory: ./out
+use_client_timestamps: True
+continue_on_error: True
+client_prerunscript:
+  - pre-post-scripts/run-ethtool.sh
+  - pre-post-scripts/run-netstat.sh
+client_postrunscript:
+  - pre-post-scripts/run-ethtool.sh
+  - pre-post-scripts/run-netstat.sh
+server_prerunscript:
+  - pre-post-scripts/run-ethtool.sh
+  - pre-post-scripts/run-netstat.sh
+server_postrunscript:
+  - pre-post-scripts/run-ethtool.sh
+  - pre-post-scripts/run-netstat.sh
+sniffer_prerunscript:
+  - pre-post-scripts/start-moongen-sniffer.sh
+sniffer_postrunscript:
+  - pre-post-scripts/stop-moongen-sniffer.sh

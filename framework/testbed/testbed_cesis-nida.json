@@ -1,0 +1,27 @@
+{
+  "server": {
+    "host": "cesis",
+    "ip": "10.0.0.2",
+    "ipv6": "fd00::2",
+    "interface": {
+      "name": "enp3s0",
+      "pci_id": "0000:03:00.0",
+      "mac": "6c:b3:11:4a:37:41",
+      "driver": "ixgbe"
+    }
+  },
+  "client": {
+    "host": "nida",
+    "ip": "10.0.0.1",
+    "ipv6": "fd00::1",
+    "interface": {
+      "name": "enp2s0",
+      "pci_id": "0000:02:00.0",
+      "mac": "6c:b3:11:4a:37:44",
+      "driver": "ixgbe"
+    }
+  },
+  "sniffer": {
+    "host": "dagda"
+  }
+}

@@ -1,0 +1,17 @@
+{
+    "tcp+tls": {
+        "path": "tcp+tls",
+	    "project_id": "116843",
+	    "solo": true
+    },
+    "ngtcp2": {
+        "path": "ngtcp2"
+    },
+    "quiche-gso-txtime": {
+        "path": "quiche-gso-txtime"
+    },
+    "picoquic": {
+        "path": "picoquic",
+        "project_id": 132724
+    }
+}

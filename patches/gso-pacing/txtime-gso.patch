@@ -1,0 +1,420 @@
+--- a/net/core/dev.c	2024-06-18 16:19:23.005285423 +0200
++++ b/net/core/dev.c	2024-07-06 10:06:50.869242935 +0200
+@@ -3453,6 +3453,38 @@
+ }
+ EXPORT_SYMBOL(__skb_gso_segment);
+ 
++/* this does not offload gso to hardware */
++struct sk_buff *skb_gso_segment_txtime(struct sk_buff *skb)
++{
++	struct sk_buff *segs, *seg;
++	struct skb_shared_info *sh;
++	netdev_features_t features = netif_skb_features(skb);
++	u64 tstamp, rate, step_ns;
++
++	sh = skb_shinfo(skb);
++	tstamp = skb->tstamp;
++	rate = sh->gso_pacing_rate; /* in bytes per second */
++	if (!skb->sk || !sk_fullsock(skb->sk) ||
++			sh->gso_segs <= 1 || !rate || !tstamp) {
++		return NULL;
++	}
++
++	segs = skb_gso_segment(skb, features & ~NETIF_F_GSO_MASK);
++	if (IS_ERR_OR_NULL(segs)) {
++		return segs;
++	}
++	// pacing rate only affects layer 4 bytes
++	step_ns = (sh->gso_size * NSEC_PER_SEC) / rate;
++
++	for (seg = segs; seg; seg = seg->next) {
++		seg->tstamp = tstamp;
++		tstamp += step_ns;
++	}
++
++	return segs;
++}
++EXPORT_SYMBOL_GPL(skb_gso_segment_txtime);
++
+ /* Take action when hardware reception checksum errors are detected. */
+ #ifdef CONFIG_BUG
+ static void do_netdev_rx_csum_fault(struct net_device *dev, struct sk_buff *skb)
+--- a/net/ipv4/udp.c	2024-06-18 16:19:23.021285901 +0200
++++ b/net/ipv4/udp.c	2024-07-05 09:22:59.808076122 +0200
+@@ -957,6 +957,7 @@
+ 			skb_shinfo(skb)->gso_type = SKB_GSO_UDP_L4;
+ 			skb_shinfo(skb)->gso_segs = DIV_ROUND_UP(datalen,
+ 								 cork->gso_size);
++			skb_shinfo(skb)->gso_pacing_rate = cork->gso_pacing_rate;
+ 		}
+ 		goto csum_partial;
+ 	}
+@@ -1022,7 +1023,7 @@
+ }
+ EXPORT_SYMBOL(udp_push_pending_frames);
+ 
+-static int __udp_cmsg_send(struct cmsghdr *cmsg, u16 *gso_size)
++static int __udp_cmsg_send(struct cmsghdr *cmsg, u16 *gso_size, u64 *gso_pacing_rate)
+ {
+ 	switch (cmsg->cmsg_type) {
+ 	case UDP_SEGMENT:
+@@ -1030,12 +1031,18 @@
+ 			return -EINVAL;
+ 		*gso_size = *(__u16 *)CMSG_DATA(cmsg);
+ 		return 0;
++	case UDP_SEGMENT_PACING_RATE:
++		// ipv6 not supported
++		if (cmsg->cmsg_len != CMSG_LEN(sizeof(__u64)) || !gso_pacing_rate)
++			return -EINVAL;
++		*gso_pacing_rate = *(__u64 *)CMSG_DATA(cmsg);
++		return 0;
+ 	default:
+ 		return -EINVAL;
+ 	}
+ }
+ 
+-int udp_cmsg_send(struct sock *sk, struct msghdr *msg, u16 *gso_size)
++int udp_cmsg_send(struct sock *sk, struct msghdr *msg, u16 *gso_size, u64 *gso_pacing_rate)
+ {
+ 	struct cmsghdr *cmsg;
+ 	bool need_ip = false;
+@@ -1050,7 +1057,7 @@
+ 			continue;
+ 		}
+ 
+-		err = __udp_cmsg_send(cmsg, gso_size);
++		err = __udp_cmsg_send(cmsg, gso_size, gso_pacing_rate);
+ 		if (err)
+ 			return err;
+ 	}
+@@ -1140,7 +1147,7 @@
+ 	ipc.gso_size = READ_ONCE(up->gso_size);
+ 
+ 	if (msg->msg_controllen) {
+-		err = udp_cmsg_send(sk, msg, &ipc.gso_size);
++		err = udp_cmsg_send(sk, msg, &ipc.gso_size, &ipc.gso_pacing_rate);
+ 		if (err > 0) {
+ 			err = ip_cmsg_send(sk, msg, &ipc,
+ 					   sk->sk_family == AF_INET6);
+--- a/net/ipv4/ip_output.c	2024-06-18 16:19:23.013285662 +0200
++++ b/net/ipv4/ip_output.c	2024-06-22 16:13:36.344866857 +0200
+@@ -1291,6 +1291,7 @@
+ 	}
+ 
+ 	cork->gso_size = ipc->gso_size;
++	cork->gso_pacing_rate = ipc->gso_pacing_rate;
+ 
+ 	cork->dst = &rt->dst;
+ 	/* We stole this route, caller should not release it. */
+--- a/net/ipv6/udp.c	2024-06-18 16:19:23.029286138 +0200
++++ b/net/ipv6/udp.c	2024-06-22 16:13:36.900868236 +0200
+@@ -1492,7 +1492,7 @@
+ 		opt->tot_len = sizeof(*opt);
+ 		ipc6.opt = opt;
+ 
+-		err = udp_cmsg_send(sk, msg, &ipc6.gso_size);
++		err = udp_cmsg_send(sk, msg, &ipc6.gso_size, NULL);
+ 		if (err > 0) {
+ 			err = ip6_datagram_send_ctl(sock_net(sk), sk, msg, fl6,
+ 						    &ipc6);
+--- a/net/sched/sch_etf.c	2024-06-18 16:19:23.081287688 +0200
++++ b/net/sched/sch_etf.c	2024-07-14 12:39:36.669453174 +0200
+@@ -197,6 +197,44 @@
+ 	return NET_XMIT_SUCCESS;
+ }
+ 
++static int etf_enqueue(struct sk_buff *skb, struct Qdisc *sch,
++		      struct sk_buff **to_free)
++{
++	struct sk_buff *segs, *next;
++	unsigned int len = 0, prev_len = qdisc_pkt_len(skb);
++	int ret, nb;
++
++	if (likely(!skb_is_gso(skb) || !skb_shinfo(skb)->gso_pacing_rate ||
++				!skb->sk || !sk_fullsock(skb->sk))) {
++		return etf_enqueue_timesortedlist(skb, sch, to_free);
++	}
++
++	segs = skb_gso_segment_txtime(skb);
++	if (IS_ERR(segs)) {
++		return qdisc_drop(skb, sch, to_free);
++	}
++	if (!segs) {
++		return etf_enqueue_timesortedlist(skb, sch, to_free);
++	}
++
++	ret = NET_XMIT_DROP;
++	nb = 0;
++	skb_list_walk_safe(segs, segs, next) {
++		skb_mark_not_on_list(segs);
++		qdisc_skb_cb(segs)->pkt_len = segs->len;
++		len += segs->len;
++		if (etf_enqueue_timesortedlist(segs, sch, to_free) == NET_XMIT_SUCCESS) {
++			ret = NET_XMIT_SUCCESS;
++			nb++;
++		}
++	}
++
++	if (nb > 1)
++		qdisc_tree_reduce_backlog(sch, 1 - nb, prev_len - len);
++	consume_skb(skb);
++	return ret;
++}
++
+ static void timesortedlist_drop(struct Qdisc *sch, struct sk_buff *skb,
+ 				ktime_t now)
+ {
+@@ -204,6 +242,8 @@
+ 	struct sk_buff *to_free = NULL;
+ 	struct sk_buff *tmp = NULL;
+ 
++	unsigned int dropped = 0;
++	unsigned int len = 0;
+ 	skb_rbtree_walk_from_safe(skb, tmp) {
+ 		if (ktime_after(skb->tstamp, now))
+ 			break;
+@@ -223,9 +263,13 @@
+ 		qdisc_drop(skb, sch, &to_free);
+ 		qdisc_qstats_overlimit(sch);
+ 		sch->q.qlen--;
++
++		dropped++;
++		len += qdisc_pkt_len(skb);
+ 	}
+ 
+ 	kfree_skb_list(to_free);
++	qdisc_tree_reduce_backlog(sch, dropped, len);
+ }
+ 
+ static void timesortedlist_remove(struct Qdisc *sch, struct sk_buff *skb)
+@@ -491,7 +535,7 @@
+ static struct Qdisc_ops etf_qdisc_ops __read_mostly = {
+ 	.id		=	"etf",
+ 	.priv_size	=	sizeof(struct etf_sched_data),
+-	.enqueue	=	etf_enqueue_timesortedlist,
++	.enqueue	=	etf_enqueue,
+ 	.dequeue	=	etf_dequeue_timesortedlist,
+ 	.peek		=	etf_peek_timesortedlist,
+ 	.init		=	etf_init,
+--- a/net/sched/sch_fq.c	2024-06-18 16:19:23.081287688 +0200
++++ b/net/sched/sch_fq.c	2024-07-07 12:18:55.045238145 +0200
+@@ -133,8 +133,26 @@
+ 
+ 	u32		timer_slack; /* hrtimer slack in ns */
+ 	struct qdisc_watchdog watchdog;
++	ktime_t	tai_offset; /* tai - mon */
+ };
+ 
++static u64 fq_skb_tstamp(const struct sk_buff *skb, const struct fq_sched_data *q)
++{
++	struct sock *sk = skb->sk;
++	if (sock_flag(sk, SOCK_TXTIME)) {
++		switch (sk->sk_clockid) {
++		case CLOCK_TAI:
++			return skb->tstamp - q->tai_offset;
++		case CLOCK_MONOTONIC:
++			return skb->tstamp;
++		default:
++			/* not supported */
++			return ~0ULL;
++		}
++	}
++	return skb->tstamp;
++}
++
+ /*
+  * f->tail and f->age share the same location.
+  * We can use the low order bit to differentiate if this location points
+@@ -433,41 +451,44 @@
+ 	rb_insert_color(&skb->rbnode, &flow->t_root);
+ }
+ 
+-static bool fq_packet_beyond_horizon(const struct sk_buff *skb,
++static bool fq_packet_beyond_horizon(const struct fq_skb_cb *cb,
+ 				    const struct fq_sched_data *q)
+ {
+-	return unlikely((s64)skb->tstamp > (s64)(q->ktime_cache + q->horizon));
++	return unlikely((s64)cb->time_to_send > (s64)(q->ktime_cache + q->horizon));
+ }
+ 
+-static int fq_enqueue(struct sk_buff *skb, struct Qdisc *sch,
++static int __fq_enqueue(struct sk_buff *skb, struct Qdisc *sch,
+ 		      struct sk_buff **to_free)
+ {
+ 	struct fq_sched_data *q = qdisc_priv(sch);
+ 	struct fq_flow *f;
++    struct fq_skb_cb *cb;
+ 
+ 	if (unlikely(sch->q.qlen >= sch->limit))
+ 		return qdisc_drop(skb, sch, to_free);
+ 
++    cb = fq_skb_cb(skb);
+ 	if (!skb->tstamp) {
+-		fq_skb_cb(skb)->time_to_send = q->ktime_cache = ktime_get_ns();
++		cb->time_to_send = q->ktime_cache = ktime_get_ns();
+ 	} else {
++		cb->time_to_send = fq_skb_tstamp(skb, q);
+ 		/* Check if packet timestamp is too far in the future.
+ 		 * Try first if our cached value, to avoid ktime_get_ns()
+ 		 * cost in most cases.
+ 		 */
+-		if (fq_packet_beyond_horizon(skb, q)) {
++		if (fq_packet_beyond_horizon(cb, q)) {
+ 			/* Refresh our cache and check another time */
+ 			q->ktime_cache = ktime_get_ns();
+-			if (fq_packet_beyond_horizon(skb, q)) {
++			if (fq_packet_beyond_horizon(cb, q)) {
+ 				if (q->horizon_drop) {
+ 					q->stat_horizon_drops++;
+ 					return qdisc_drop(skb, sch, to_free);
+ 				}
+ 				q->stat_horizon_caps++;
+ 				skb->tstamp = q->ktime_cache + q->horizon;
++                cb->time_to_send = skb->tstamp;
+ 			}
+ 		}
+-		fq_skb_cb(skb)->time_to_send = skb->tstamp;
+ 	}
+ 
+ 	f = fq_classify(skb, q);
+@@ -496,6 +517,44 @@
+ 	return NET_XMIT_SUCCESS;
+ }
+ 
++static int fq_enqueue(struct sk_buff *skb, struct Qdisc *sch,
++		      struct sk_buff **to_free)
++{
++	struct sk_buff *segs, *next;
++	unsigned int len = 0, prev_len = qdisc_pkt_len(skb);
++	int ret, nb;
++
++	if (likely(!skb_is_gso(skb) || !skb_shinfo(skb)->gso_pacing_rate ||
++				!skb->sk || !sk_fullsock(skb->sk))) {
++		return __fq_enqueue(skb, sch, to_free);
++	}
++
++	segs = skb_gso_segment_txtime(skb);
++	if (IS_ERR(segs)) {
++		return qdisc_drop(skb, sch, to_free);
++	}
++	if (!segs) {
++		return __fq_enqueue(skb, sch, to_free);
++	}
++
++	ret = NET_XMIT_DROP;
++	nb = 0;
++	skb_list_walk_safe(segs, segs, next) {
++		skb_mark_not_on_list(segs);
++		qdisc_skb_cb(segs)->pkt_len = segs->len;
++		len += segs->len;
++		if (__fq_enqueue(segs, sch, to_free) == NET_XMIT_SUCCESS) {
++			ret = NET_XMIT_SUCCESS;
++			nb++;
++		}
++	}
++
++	if (nb > 1)
++		qdisc_tree_reduce_backlog(sch, 1 - nb, prev_len - len);
++	consume_skb(skb);
++	return ret;
++}
++
+ static void fq_check_throttled(struct fq_sched_data *q, u64 now)
+ {
+ 	unsigned long sample;
+@@ -954,6 +1013,8 @@
+ 	/* Default ce_threshold of 4294 seconds */
+ 	q->ce_threshold		= (u64)NSEC_PER_USEC * ~0U;
+ 
++	q->tai_offset = ktime_get_offset(TK_OFFS_TAI);
++
+ 	qdisc_watchdog_init_clockid(&q->watchdog, sch, CLOCK_MONOTONIC);
+ 
+ 	if (opt)
+--- a/kernel/time/timekeeping.c	2024-06-18 16:19:22.933283276 +0200
++++ b/kernel/time/timekeeping.c	2024-06-22 16:13:29.168849068 +0200
+@@ -876,6 +876,12 @@
+ 	[TK_OFFS_TAI]	= &tk_core.timekeeper.offs_tai,
+ };
+ 
++ktime_t ktime_get_offset(enum tk_offsets offs)
++{
++	return *offsets[offs];
++}
++EXPORT_SYMBOL_GPL(ktime_get_offset);
++
+ ktime_t ktime_get_with_offset(enum tk_offsets offs)
+ {
+ 	struct timekeeper *tk = &tk_core.timekeeper;
+--- a/include/net/ip.h	2024-06-18 16:19:22.725277077 +0200
++++ b/include/net/ip.h	2024-06-22 16:13:24.180836704 +0200
+@@ -82,6 +82,7 @@
+ 	__s16			tos;
+ 	char			priority;
+ 	__u16			gso_size;
++	__u64			gso_pacing_rate;
+ };
+ 
+ static inline void ipcm_init(struct ipcm_cookie *ipcm)
+--- a/include/net/udp.h	2024-06-18 16:19:22.741277553 +0200
++++ b/include/net/udp.h	2024-06-22 16:13:24.212836784 +0200
+@@ -272,7 +272,7 @@
+ void udp_splice_eof(struct socket *sock);
+ int udp_push_pending_frames(struct sock *sk);
+ void udp_flush_pending_frames(struct sock *sk);
+-int udp_cmsg_send(struct sock *sk, struct msghdr *msg, u16 *gso_size);
++int udp_cmsg_send(struct sock *sk, struct msghdr *msg, u16 *gso_size, u64 *gso_pacing_rate);
+ void udp4_hwcsum(struct sk_buff *skb, __be32 src, __be32 dst);
+ int udp_rcv(struct sk_buff *skb);
+ int udp_ioctl(struct sock *sk, int cmd, unsigned long arg);
+--- a/include/net/inet_sock.h	2024-06-18 16:19:22.725277077 +0200
++++ b/include/net/inet_sock.h	2024-06-22 16:13:24.180836704 +0200
+@@ -173,6 +173,7 @@
+ 	__s16			tos;
+ 	char			priority;
+ 	__u16			gso_size;
++	u64			gso_pacing_rate;
+ 	u64			transmit_time;
+ 	u32			mark;
+ };
+--- a/include/linux/netdevice.h	2024-06-18 16:19:22.709276600 +0200
++++ b/include/linux/netdevice.h	2024-06-22 16:13:23.856835902 +0200
+@@ -4772,6 +4772,7 @@
+ 				    netdev_features_t features, __be16 type);
+ struct sk_buff *skb_mac_gso_segment(struct sk_buff *skb,
+ 				    netdev_features_t features);
++struct sk_buff *skb_gso_segment_txtime(struct sk_buff *skb);
+ 
+ struct netdev_bonding_info {
+ 	ifslave	slave;
+--- a/include/linux/skbuff.h	2024-06-18 16:19:22.689276003 +0200
++++ b/include/linux/skbuff.h	2024-06-22 16:13:23.432834851 +0200
+@@ -590,6 +590,7 @@
+ 	struct skb_shared_hwtstamps hwtstamps;
+ 	unsigned int	gso_type;
+ 	u32		tskey;
++	u64		gso_pacing_rate;
+ 
+ 	/*
+ 	 * Warning : all fields before dataref are cleared in __alloc_skb()
+--- a/include/linux/timekeeping.h	2024-06-18 16:19:22.701276362 +0200
++++ b/include/linux/timekeeping.h	2024-06-22 16:13:23.840835862 +0200
+@@ -65,6 +65,7 @@
+ };
+ 
+ extern ktime_t ktime_get(void);
++extern ktime_t ktime_get_offset(enum tk_offsets offs);
+ extern ktime_t ktime_get_with_offset(enum tk_offsets offs);
+ extern ktime_t ktime_get_coarse_with_offset(enum tk_offsets offs);
+ extern ktime_t ktime_mono_to_any(ktime_t tmono, enum tk_offsets offs);
+--- a/include/uapi/linux/udp.h	2024-06-18 16:19:22.805279462 +0200
++++ b/include/uapi/linux/udp.h	2024-06-22 16:13:25.200839233 +0200
+@@ -34,6 +34,7 @@
+ #define UDP_NO_CHECK6_RX 102	/* Disable accpeting checksum for UDP6 */
+ #define UDP_SEGMENT	103	/* Set GSO segmentation size */
+ #define UDP_GRO		104	/* This socket can receive UDP GRO packets */
++#define UDP_SEGMENT_PACING_RATE 105 /* pacing rate for GSO */
+ 
+ /* UDP encapsulation types */
+ #define UDP_ENCAP_ESPINUDP_NON_IKE	1 /* draft-ietf-ipsec-nat-t-ike-00/01 */
+

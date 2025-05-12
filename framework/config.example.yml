@@ -1,0 +1,29 @@
+testbed: testbed/cesis-nida.json
+server: lsquic
+client: lsquic
+test: goodput
+repetitions: 5
+filesize: 8192
+implementation_directory: ./out
+use_client_timestamps: True
+continue_on_error: True
+client_implementation_params:
+  - rmem_value: 6815744
+server_implementation_params:
+  - rmem_value: 6815744
+client_prerunscript:
+  - pre-post-scripts/run-ethtool.sh
+  - pre-post-scripts/run-netstat.sh
+  - pre-post-scripts/set-rcvbuf.sh
+client_postrunscript:
+  - pre-post-scripts/run-ethtool.sh
+  - pre-post-scripts/run-netstat.sh
+  - pre-post-scripts/set-buffers-default.sh
+server_prerunscript:
+  - pre-post-scripts/run-ethtool.sh
+  - pre-post-scripts/run-netstat.sh
+  - pre-post-scripts/set-rcvbuf.sh
+server_postrunscript:
+  - pre-post-scripts/run-ethtool.sh
+  - pre-post-scripts/run-netstat.sh
+  - pre-post-scripts/set-buffers-default.sh
