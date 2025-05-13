@@ -71,8 +71,10 @@ You can use the four provided scripts to (de)compress the files.
 The evaluation scripts are located in the [analysis directory](analysis).
 The script names should be executed in the order of the numbers in the file names.
 Before running the scripts, make sure to install the required Python packages by running `pip install -r requirements.txt` inside the analysis directory.
+We used Python 3.11 on Debian Bookworm and MacOS Sequoia for the evaluation.
 * The first script, `01_preprocessing.py`, will take a while, as all pcap files are processed. The script will place all generated data under [`analysis/build/data`](analysis/build/data). Known pcaps will be skipped so that the script runs faster on subsequent runs. We uploaded all preprocessed data, so you don't have to wait long for further analysis. If you want to redo the preprocessing step, you can simply delete the [`analysis/build/data`](analysis/build/data) directory.
 * The second script, `02_plotting.py`, will generate the cdf plots presented in the paper. All generated figures are stored as `.pdf` under [analysis/build/figures](analysis/build/figures).
+* The third script, `03_stats.py`, will parse the detailed logs to retrieve metrics like the goodput and the amount of dropped packets. The data will be printed to stdout and not saved to a file.
 
 > [!TIP]
 > As our measurement framework extends the one presented by Jaeger et al. in *[QUIC on the Highway: Evaluating Performance on High Rate Links](http://doi.org/10.23919/IFIPNetworking57963.2023.10186365)*, the [scripts provided back then](https://github.com/tumi8/quic-10g-paper) do also work for our data.
