@@ -66,11 +66,15 @@ All files are compressed using [zstd](https://facebook.github.io/zstd/) for effi
 While the pcap files are compressed individually, the detailed logs are compressed in a tarball format.
 You can use the four provided scripts to (de)compress the files.
 
+We also use [Git LFS](https://git-lfs.com/) to store the pcap files in the remote repository.
+Please make sure to have Git LFS installed and enabled in your local repository to pull the pcap files correctly.
+
 ## 📊 Evaluation Scripts
 
 The evaluation scripts are located in the [analysis directory](analysis).
 The script names should be executed in the order of the numbers in the file names.
 Before running the scripts, make sure to install the required Python packages by running `pip install -r requirements.txt` inside the analysis directory.
+If you evaluate the data provided by us, please also make sure that the data was pulled with Git-LFS and decompressed as described in the [measurement data section](#-measurement-data).
 We used Python 3.11 on Debian Bookworm and MacOS Sequoia for the evaluation.
 * The first script, `01_preprocessing.py`, will take a while, as all pcap files are processed. The script will place all generated data under [`analysis/build/data`](analysis/build/data). Known pcaps will be skipped so that the script runs faster on subsequent runs. We uploaded all preprocessed data, so you don't have to wait long for further analysis. If you want to redo the preprocessing step, you can simply delete the [`analysis/build/data`](analysis/build/data) directory.
 * The second script, `02_plotting.py`, will generate the cdf plots presented in the paper. All generated figures are stored as `.pdf` under [analysis/build/figures](analysis/build/figures).
